@@ -163,3 +163,7 @@ elif total_power > 800:
 
 else:
     st.success("✅ Compressor normal")
+
+# -------- FOOTER --------
+st.divider()
+st.markdown("<p style='text-align: center; color: gray;'>Built by Sanket Naik</p>", unsafe_allow_html=True)
