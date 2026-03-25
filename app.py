@@ -1,4 +1,4 @@
-    import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,234 +10,136 @@ st.title("🌀 Compressor Digital Twin Dashboard")
 # ---------------- GLOBAL INPUT ----------------
 st.header("📥 Global Input")
 
-col1, col2 = st.columns(2)
+flow = st.number_input("Mass Flow (kg/hr)", value=10000.0)
+stages = st.selectbox("Number of Stages", [1, 2, 3], index=2)
 
-with col1:
-    flow = st.number_input("Mass Flow (kg/hr)", value=10000.0)
-
-with col2:
-    stages = st.selectbox("Number of Stages", [1, 2, 3], index=2)
-
-mass_flow = flow / 3600  # kg/s
+mass_flow = flow / 3600
 
 # ---------------- STAGE INPUT ----------------
 def stage_input(name):
-    st.subheader(f"🔹 {name}")
+    st.subheader(name)
 
-    c1, c2, c3 = st.columns(3)
+    Pin = st.number_input(f"{name} Pin (bar)", key=name+"Pin", min_value=0.0)
+    Pout = st.number_input(f"{name} Pout (bar)", key=name+"Pout", min_value=0.0)
 
-    with c1:
-        Pin = st.number_input(f"{name} Inlet Pressure (bar)", key=name+"Pin", min_value=0.0)
-        Tin = st.number_input(f"{name} Inlet Temp (°C)", key=name+"Tin")
+    Tin = st.number_input(f"{name} Tin (°C)", key=name+"Tin")
+    Tout = st.number_input(f"{name} Tout (°C)", key=name+"Tout")
 
-    with c2:
-        Pout = st.number_input(f"{name} Outlet Pressure (bar)", key=name+"Pout", min_value=0.0)
-        Tout = st.number_input(f"{name} Outlet Temp (°C)", key=name+"Tout")
-
-    with c3:
-        MW = st.number_input(f"{name} MW", key=name+"MW", value=28.0, min_value=1.0)
-        Cp = st.number_input(f"{name} Cp", key=name+"Cp", value=1.005, min_value=0.1)
-        Cv = st.number_input(f"{name} Cv", key=name+"Cv", value=0.718, min_value=0.1)
+    MW = st.number_input(f"{name} MW", key=name+"MW", value=28.0)
+    Cp = st.number_input(f"{name} Cp", key=name+"Cp", value=1.005)
+    Cv = st.number_input(f"{name} Cv", key=name+"Cv", value=0.718)
 
     return Pin, Pout, Tin, Tout, MW, Cp, Cv
 
-stage_data = []
-for i in range(stages):
-    stage_data.append(stage_input(f"Stage {i+1}"))
+stage_data = [stage_input(f"Stage {i+1}") for i in range(stages)]
 
-# ---------------- CALCULATION ----------------
-def calc_stage(data, stage_no):
+# ---------------- SAFE CALC ----------------
+def calc_stage(data, i):
+    try:
+        Pin, Pout, Tin, Tout, MW, Cp, Cv = data
 
-    Pin, Pout, Tin, Tout, MW, Cp, Cv = data
+        if Pin <= 0 or Pout <= Pin:
+            return None
 
-    if Pin <= 0 or Pout <= 0 or Pout <= Pin:
+        if Cp <= Cv:
+            return None
+
+        Tin_K = Tin + 273.15
+        Tout_K = Tout + 273.15
+
+        if Tout_K <= Tin_K:
+            return None
+
+        K = Cp / Cv
+        R = 8.314 / MW
+
+        PR = Pout / Pin
+
+        T2s = Tin_K * (PR)**((K - 1)/K)
+
+        dT_act = Tout_K - Tin_K
+        if dT_act <= 0.001:
+            return None
+
+        eta = (T2s - Tin_K) / dT_act
+        eta = max(0.01, min(eta, 1))
+
+        N = ((K - 1)/(K * eta)) + 1
+
+        # 🔥 SAFETY
+        if abs(N - 1) < 0.01:
+            return None
+
+        Head = (N/(N-1)) * R * Tin_K * ((PR)**((N-1)/N) - 1)
+        Power = mass_flow * Head
+
+        Pin_Pa = Pin * 1e5
+        Q = (mass_flow * R * 1000 * Tin_K) / Pin_Pa
+
+        return {
+            "stage": i,
+            "eff": eta*100,
+            "power": Power,
+            "PR": PR,
+            "flow": Q,
+            "Tout": Tout_K,
+            "T2s": T2s
+        }
+
+    except Exception as e:
+        st.error(f"Stage {i} Error: {e}")
         return None
-
-    if Cp <= Cv:
-        return None
-
-    Tin_K = Tin + 273.15
-    Tout_K = Tout + 273.15
-
-    if Tout_K <= Tin_K:
-        return None
-
-    # Properties
-    K = Cp / Cv
-    R = 8.314 / MW
-
-    PR = Pout / Pin
-
-    # Ideal temp
-    T2s = Tin_K * (PR)**((K - 1)/K)
-
-    dT_act = Tout_K - Tin_K
-    dT_ideal = T2s - Tin_K
-
-    if dT_act <= 0.001:
-        return None
-
-    eta = dT_ideal / dT_act
-    eta = max(0.01, min(eta, 1))
-
-    eta_percent = eta * 100
-
-    # Polytropic index
-    N = ((K - 1)/(K * eta)) + 1
-
-    if abs(N - 1) < 0.001:
-        return None  # avoid division error
-
-    # Head
-    Head = (N/(N-1)) * R * Tin_K * ((PR)**((N-1)/N) - 1)
-
-    # Power
-    Power = mass_flow * Head
-
-    # Flow
-    Pin_Pa = Pin * 1e5
-    Q = (mass_flow * R * 1000 * Tin_K) / Pin_Pa
-
-    # Diagnosis
-    issues = []
-
-    if eta_percent < 65:
-        issues.append("Low efficiency → fouling/leakage")
-
-    if eta_percent > 90:
-        issues.append("Check sensors → too high efficiency")
-
-    if PR > 4:
-        issues.append("High PR → surge risk")
-
-    if Tout_K > T2s + 40:
-        issues.append("High outlet temp → cooling issue")
-
-    return {
-        "Stage": stage_no,
-        "PR": PR,
-        "Efficiency": eta_percent,
-        "Power": Power,
-        "Head": Head,
-        "Flow": Q,
-        "Tout": Tout_K,
-        "T2s": T2s,
-        "Issues": issues
-    }
 
 # ---------------- RESULTS ----------------
-st.header("⚙️ Stage-wise Results")
+st.header("⚙️ Results")
 
 results = []
 total_power = 0
 
-cols = st.columns(int(stages))  # safer
-
 for i, data in enumerate(stage_data):
     res = calc_stage(data, i+1)
 
-    with cols[i]:
-        st.subheader(f"Stage {i+1}")
+    if res:
+        st.write(f"### Stage {i+1}")
+        st.write(f"Efficiency: {res['eff']:.1f} %")
+        st.write(f"Power: {res['power']:.1f} kW")
+        st.write(f"PR: {res['PR']:.2f}")
 
-        if res:
-            st.metric("Efficiency", f"{res['Efficiency']:.1f} %")
-            st.metric("Power", f"{res['Power']:.1f} kW")
-            st.metric("PR", f"{res['PR']:.2f}")
-            st.metric("Flow", f"{res['Flow']:.2f} m³/s")
-
-            if res["Issues"]:
-                for issue in res["Issues"]:
-                    st.warning(issue)
-            else:
-                st.success("Healthy")
-
-            total_power += res["Power"]
-            results.append(res)
-        else:
-            st.error("Invalid Data")
+        results.append(res)
+        total_power += res["power"]
+    else:
+        st.warning(f"Stage {i+1} → Invalid Data")
 
 # ---------------- TOTAL ----------------
-st.header("⚡ Total Performance")
+st.header("⚡ Total")
 
-st.success(f"Total Power: {total_power:.2f} kW")
-
-if len(results) > 0:
-    avg_eff = np.mean([r["Efficiency"] for r in results])
-    st.metric("Overall Efficiency", f"{avg_eff:.1f} %")
+st.write(f"Total Power: {total_power:.2f} kW")
 
 # ---------------- INTERCOOLER ----------------
-st.header("❄️ Intercooler Performance")
-
 if len(results) > 1:
+    st.header("❄️ Intercooler")
+
     for i in range(len(results)-1):
-        T_out = results[i]["Tout"]
-        T_next_in = stage_data[i+1][2] + 273.15
-
-        delta = T_out - T_next_in
-
-        st.write(f"Stage {i+1} → Stage {i+2}")
+        delta = results[i]["Tout"] - (stage_data[i+1][2] + 273.15)
 
         if delta < 10:
-            st.warning("Poor cooling → intercooler issue")
-        elif delta > 50:
-            st.info("Excellent cooling")
+            st.warning(f"Stage {i+1}-{i+2}: Poor cooling")
         else:
-            st.success("Normal cooling")
+            st.success(f"Stage {i+1}-{i+2}: OK")
 
-# ---------------- SURGE ----------------
-st.header("⚠️ Surge Risk Indicator")
+# ---------------- GRAPH ----------------
+if st.button("Show Trend"):
+    try:
+        time = np.arange(0, 50)
 
-for r in results:
-    if r["PR"] > 4 and r["Flow"] < 2:
-        st.error(f"Stage {r['Stage']} → HIGH SURGE RISK")
-    elif r["PR"] > 3:
-        st.warning(f"Stage {r['Stage']} → Moderate risk")
-    else:
-        st.success(f"Stage {r['Stage']} → Safe")
+        fig, ax = plt.subplots()
 
-# ---------------- TREND GRAPH ----------------
-st.header("📈 Efficiency Trend (Simulation)")
+        for i in range(stages):
+            eff = 75 + 5*np.sin(0.2*time + i)
+            ax.plot(time, eff, label=f"Stage {i+1}")
 
-if st.button("Generate Trend"):
-    time = np.arange(0, 50)
-
-    fig = plt.figure()
-
-    for i in range(stages):
-        eff = 75 + 5*np.sin(0.2*time + i)
-        plt.plot(time, eff, label=f"Stage {i+1}")
-
-    plt.xlabel("Time")
-    plt.ylabel("Efficiency (%)")
-    plt.legend()
-
-    st.pyplot(fig)
-
-# ---------------- FILE UPLOAD ----------------
-st.header("📂 Upload Plant Data (CSV)")
-
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.write(df.head())
-
-    if "Efficiency" in df.columns:
-        fig = plt.figure()
-        plt.plot(df["Efficiency"])
-        plt.title("Uploaded Efficiency Trend")
+        ax.legend()
         st.pyplot(fig)
 
-# ---------------- FINAL DIAGNOSIS ----------------
-st.header("🧠 Overall Diagnosis")
-
-if total_power == 0:
-    st.error("Check Inputs")
-elif total_power > 800:
-    st.warning("⚠️ Compressor overload")
-else:
-    st.success("✅ Compressor operating normally")
-
-# ---------------- FOOTER ----------------
-st.divider()
-st.markdown("<p style='text-align: center; color: gray;'>Digital Twin by Sanket Naik</p>", unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Graph error: {e}")
