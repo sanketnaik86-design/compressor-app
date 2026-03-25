@@ -42,12 +42,11 @@ def stage_input(name):
     return Pin, Pout, Tin, Tout, MW, Cp, Cv
 
 stage_data = []
-
 for i in range(stages):
     stage_data.append(stage_input(f"Stage {i+1}"))
 
 # ---------------- CALCULATION ----------------
-def calc_stage(data):
+def calc_stage(data, stage_no):
 
     Pin, Pout, Tin, Tout, MW, Cp, Cv = data
 
@@ -69,6 +68,7 @@ def calc_stage(data):
 
     PR = Pout / Pin
 
+    # Ideal temp
     T2s = Tin_K * (PR)**((K - 1)/K)
 
     dT_act = Tout_K - Tin_K
@@ -80,21 +80,46 @@ def calc_stage(data):
     eta = dT_ideal / dT_act
     eta = max(0.01, min(eta, 1))
 
+    eta_percent = eta * 100
+
+    # Polytropic index
     N = ((K - 1)/(K * eta)) + 1
 
+    # Head
     Head = (N/(N-1)) * R * Tin_K * ((PR)**((N-1)/N) - 1)
 
+    # Power
     Power = mass_flow * Head
 
+    # Flow
     Pin_Pa = Pin * 1e5
     Q = (mass_flow * R * 1000 * Tin_K) / Pin_Pa
 
+    # Diagnosis
+    issues = []
+
+    if eta_percent < 65:
+        issues.append("Low efficiency → fouling/leakage")
+
+    if eta_percent > 90:
+        issues.append("Check sensors → too high efficiency")
+
+    if PR > 4:
+        issues.append("High PR → surge risk")
+
+    if Tout_K > T2s + 40:
+        issues.append("High outlet temp → cooling issue")
+
     return {
+        "Stage": stage_no,
         "PR": PR,
-        "Efficiency": eta * 100,
+        "Efficiency": eta_percent,
         "Power": Power,
         "Head": Head,
-        "Flow": Q
+        "Flow": Q,
+        "Tout": Tout_K,
+        "T2s": T2s,
+        "Issues": issues
     }
 
 # ---------------- RESULTS ----------------
@@ -106,7 +131,7 @@ total_power = 0
 cols = st.columns(stages)
 
 for i, data in enumerate(stage_data):
-    res = calc_stage(data)
+    res = calc_stage(data, i+1)
 
     with cols[i]:
         st.subheader(f"Stage {i+1}")
@@ -117,8 +142,14 @@ for i, data in enumerate(stage_data):
             st.metric("PR", f"{res['PR']:.2f}")
             st.metric("Flow", f"{res['Flow']:.2f} m³/s")
 
+            if res["Issues"]:
+                for issue in res["Issues"]:
+                    st.warning(issue)
+            else:
+                st.success("Healthy")
+
             total_power += res["Power"]
-            results.append(res["Efficiency"])
+            results.append(res)
         else:
             st.error("Invalid Data")
 
@@ -128,37 +159,54 @@ st.header("⚡ Total Performance")
 st.success(f"Total Power: {total_power:.2f} kW")
 
 if results:
-    avg_eff = np.mean(results)
+    avg_eff = np.mean([r["Efficiency"] for r in results])
     st.metric("Overall Efficiency", f"{avg_eff:.1f} %")
 
-# ---------------- DIAGNOSIS ----------------
-st.header("🧠 Diagnosis")
+# ---------------- INTERCOOLER ----------------
+st.header("❄️ Intercooler Performance")
 
-if total_power == 0:
-    st.error("Check Inputs")
+for i in range(len(results)-1):
+    T_out = results[i]["Tout"]
+    T_next_in = stage_data[i+1][2] + 273.15
 
-elif total_power > 800:
-    st.warning("⚠️ High Power → Possible overload")
+    delta = T_out - T_next_in
 
-else:
-    st.success("✅ Compressor Normal")
+    st.write(f"Stage {i+1} → Stage {i+2}")
+
+    if delta < 10:
+        st.warning("Poor cooling → intercooler issue")
+    elif delta > 50:
+        st.info("Excellent cooling")
+    else:
+        st.success("Normal cooling")
+
+# ---------------- SURGE ----------------
+st.header("⚠️ Surge Risk Indicator")
+
+for r in results:
+    if r["PR"] > 4 and r["Flow"] < 2:
+        st.error(f"Stage {r['Stage']} → HIGH SURGE RISK")
+    elif r["PR"] > 3:
+        st.warning(f"Stage {r['Stage']} → Moderate risk")
+    else:
+        st.success(f"Stage {r['Stage']} → Safe")
 
 # ---------------- TREND GRAPH ----------------
 st.header("📈 Efficiency Trend (Simulation)")
 
 if st.button("Generate Trend"):
     time = np.arange(0, 50)
-    
+
     fig = plt.figure()
-    
+
     for i in range(stages):
         eff = 75 + 5*np.sin(0.2*time + i)
         plt.plot(time, eff, label=f"Stage {i+1}")
-    
+
     plt.xlabel("Time")
     plt.ylabel("Efficiency (%)")
     plt.legend()
-    
+
     st.pyplot(fig)
 
 # ---------------- FILE UPLOAD ----------------
@@ -175,6 +223,18 @@ if uploaded_file:
         plt.plot(df["Efficiency"])
         plt.title("Uploaded Efficiency Trend")
         st.pyplot(fig)
+
+# ---------------- FINAL DIAGNOSIS ----------------
+st.header("🧠 Overall Diagnosis")
+
+if total_power == 0:
+    st.error("Check Inputs")
+
+elif total_power > 800:
+    st.warning("⚠️ Compressor overload")
+
+else:
+    st.success("✅ Compressor operating normally")
 
 # ---------------- FOOTER ----------------
 st.divider()
