@@ -9,45 +9,84 @@ st.title("🌀 Compressor Digital Twin Dashboard")
 # ---------------- GLOBAL INPUT ----------------
 st.header("📥 Global Input")
 
-col1, col2 = st.columns(2)
-
-with col1:
-    flow = st.number_input("Mass Flow (kg/hr)", value=10000.0)
-
-with col2:
-    stages = st.selectbox("Number of Stages", [1, 2, 3], index=2)
+flow = st.number_input("Mass Flow (kg/hr)", value=10000.0)
+stages = st.selectbox("Number of Stages", [1, 2, 3], index=2)
 
 mass_flow = flow / 3600
 
+# ---------------- GAS COMPOSITION ----------------
+st.header("🧪 Gas Composition (Mole %)")
+
+c1, c2, c3, c4, c5 = st.columns(5)
+
+CH4 = c1.number_input("CH4 %", value=80.0)
+C2H6 = c2.number_input("C2H6 %", value=5.0)
+N2 = c3.number_input("N2 %", value=10.0)
+H2 = c4.number_input("H2 %", value=3.0)
+CO2 = c5.number_input("CO2 %", value=2.0)
+
+total = CH4 + C2H6 + N2 + H2 + CO2
+
+if total <= 0:
+    st.error("❌ Composition cannot be zero")
+    st.stop()
+
+if abs(total - 100) > 0.5:
+    st.warning("⚠️ Total composition should be ~100%")
+
+# ---------------- GAS PROPERTY ----------------
+def gas_properties(CH4, C2H6, N2, H2, CO2):
+
+    MW_dict = {"CH4":16, "C2H6":30, "N2":28, "H2":2, "CO2":44}
+    Cp_dict = {"CH4":2.2, "C2H6":1.7, "N2":1.04, "H2":14.3, "CO2":0.85}
+
+    y = {
+        "CH4": CH4/100,
+        "C2H6": C2H6/100,
+        "N2": N2/100,
+        "H2": H2/100,
+        "CO2": CO2/100
+    }
+
+    MW_mix = sum(y[i]*MW_dict[i] for i in y)
+    Cp_mix = sum(y[i]*Cp_dict[i] for i in y)
+
+    R = 8.314 / MW_mix
+    Cv_mix = Cp_mix - R
+
+    if Cv_mix <= 0:
+        st.error("❌ Invalid gas properties (Cv ≤ 0)")
+        st.stop()
+
+    return MW_mix, Cp_mix, Cv_mix
+
+MW_mix, Cp_mix, Cv_mix = gas_properties(CH4, C2H6, N2, H2, CO2)
+
+st.success(f"MW: {MW_mix:.2f} | Cp: {Cp_mix:.2f} | Cv: {Cv_mix:.2f}")
+
 # ---------------- STAGE INPUT ----------------
 def stage_input(name):
-    st.subheader(f"🔹 {name}")
+    st.subheader(name)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
 
-    with c1:
-        Pin = st.number_input(f"{name} Inlet Pressure (bar)", key=name+"Pin", min_value=0.0)
-        Tin = st.number_input(f"{name} Inlet Temp (°C)", key=name+"Tin")
+    Pin = c1.number_input(f"{name} Pin (bar)", key=name+"Pin", min_value=0.0)
+    Tin = c1.number_input(f"{name} Tin (°C)", key=name+"Tin")
 
-    with c2:
-        Pout = st.number_input(f"{name} Outlet Pressure (bar)", key=name+"Pout", min_value=0.0)
-        Tout = st.number_input(f"{name} Outlet Temp (°C)", key=name+"Tout")
+    Pout = c2.number_input(f"{name} Pout (bar)", key=name+"Pout", min_value=0.0)
+    Tout = c2.number_input(f"{name} Tout (°C)", key=name+"Tout")
 
-    with c3:
-        MW = st.number_input(f"{name} MW", key=name+"MW", value=28.0, min_value=1.0)
-        Cp = st.number_input(f"{name} Cp", key=name+"Cp", value=1.005, min_value=0.1)
-        Cv = st.number_input(f"{name} Cv", key=name+"Cv", value=0.718, min_value=0.1)
-
-    return Pin, Pout, Tin, Tout, MW, Cp, Cv
+    return Pin, Pout, Tin, Tout
 
 stage_data = [stage_input(f"Stage {i+1}") for i in range(stages)]
 
-# ---------------- CALCULATION ----------------
-def calc_stage(data, stage_no):
-    try:
-        Pin, Pout, Tin, Tout, MW, Cp, Cv = data
+# ---------------- CALC ----------------
+def calc_stage(data, i):
 
-        if Pin <= 0 or Pout <= Pin or Cp <= Cv:
+    try:
+        Pin, Pout, Tin, Tout = data
+
+        if Pin <= 0 or Pout <= Pin:
             return None
 
         Tin_K = Tin + 273.15
@@ -56,8 +95,9 @@ def calc_stage(data, stage_no):
         if Tout_K <= Tin_K:
             return None
 
-        K = Cp / Cv
-        R = 8.314 / MW
+        K = Cp_mix / Cv_mix
+        R = 8.314 / MW_mix
+
         PR = Pout / Pin
 
         T2s = Tin_K * (PR)**((K - 1)/K)
@@ -67,7 +107,7 @@ def calc_stage(data, stage_no):
             return None
 
         eta = (T2s - Tin_K) / dT_act
-        eta = max(0.01, min(eta, 1))
+        eta = np.clip(eta, 0.01, 1)
 
         eta_percent = eta * 100
 
@@ -85,24 +125,23 @@ def calc_stage(data, stage_no):
         issues = []
         if eta_percent < 65:
             issues.append("Low efficiency")
-        if eta_percent > 90:
-            issues.append("Sensor issue")
         if PR > 4:
             issues.append("Surge risk")
         if Tout_K > T2s + 40:
             issues.append("Cooling issue")
 
         return {
-            "Stage": stage_no,
-            "PR": PR,
+            "Stage": i,
             "Efficiency": eta_percent,
             "Power": Power,
+            "PR": PR,
             "Flow": Q,
             "Tout": Tout_K,
             "Issues": issues
         }
 
-    except:
+    except Exception as e:
+        st.error(f"Stage {i} Error: {e}")
         return None
 
 # ---------------- RESULTS ----------------
@@ -123,12 +162,12 @@ for i, data in enumerate(stage_data):
             st.metric("Efficiency", f"{res['Efficiency']:.1f} %")
             st.metric("Power", f"{res['Power']:.1f} kW")
             st.metric("PR", f"{res['PR']:.2f}")
-            st.metric("Flow", f"{res['Flow']:.2f} m³/s")
+            st.metric("Flow", f"{res['Flow']:.2f}")
 
-            if res["Issues"]:
-                for issue in res["Issues"]:
-                    st.warning(issue)
-            else:
+            for issue in res["Issues"]:
+                st.warning(issue)
+
+            if not res["Issues"]:
                 st.success("Healthy")
 
             total_power += res["Power"]
@@ -145,53 +184,48 @@ if results:
     avg_eff = np.mean([r["Efficiency"] for r in results])
     st.metric("Overall Efficiency", f"{avg_eff:.1f} %")
 
-# ---------------- INTERCOOLER ----------------
-st.header("❄️ Intercooler")
-
-if len(results) > 1:
-    for i in range(len(results)-1):
-        delta = results[i]["Tout"] - (stage_data[i+1][2] + 273.15)
-
-        if delta < 10:
-            st.warning(f"Stage {i+1}-{i+2}: Poor cooling")
-        else:
-            st.success(f"Stage {i+1}-{i+2}: OK")
-
-# ---------------- SURGE ----------------
-st.header("⚠️ Surge")
-
-for r in results:
-    if r["PR"] > 4 and r["Flow"] < 2:
-        st.error(f"Stage {r['Stage']} → HIGH RISK")
-    elif r["PR"] > 3:
-        st.warning(f"Stage {r['Stage']} → Moderate")
-    else:
-        st.success(f"Stage {r['Stage']} → Safe")
-
-# ---------------- TREND ----------------
-st.header("📈 Efficiency Trend")
-
-if st.button("Generate Trend"):
-    time = np.arange(0, 50)
-
-    data = {}
-    for i in range(stages):
-        data[f"Stage {i+1}"] = 75 + 5*np.sin(0.2*time + i)
-
-    df = pd.DataFrame(data)
-    st.line_chart(df)
-
-# ---------------- FILE ----------------
-st.header("📂 Upload CSV")
+# ---------------- FILE UPLOAD ----------------
+st.header("📂 Upload Plant Data")
 
 file = st.file_uploader("Upload CSV")
 
 if file:
-    df = pd.read_csv(file)
-    st.write(df.head())
+    try:
+        df = pd.read_csv(file)
+        st.dataframe(df.head())
 
-    if "Efficiency" in df.columns:
-        st.line_chart(df["Efficiency"])
+        eff_cols = []
+
+        for i in range(stages):
+            s = i + 1
+
+            if all(col in df.columns for col in [
+                f"Stage{s}_Pin", f"Stage{s}_Pout",
+                f"Stage{s}_Tin", f"Stage{s}_Tout"]):
+
+                Pin = df[f"Stage{s}_Pin"]
+                Pout = df[f"Stage{s}_Pout"]
+                Tin = df[f"Stage{s}_Tin"] + 273.15
+                Tout = df[f"Stage{s}_Tout"] + 273.15
+
+                valid = (Tout - Tin) > 0
+
+                PR = Pout / Pin
+                K = Cp_mix / Cv_mix
+
+                T2s = Tin * (PR)**((K - 1)/K)
+                eta = np.where(valid, (T2s - Tin)/(Tout - Tin), np.nan)
+
+                df[f"Stage{s}_Eff"] = eta * 100
+                eff_cols.append(f"Stage{s}_Eff")
+
+        if eff_cols:
+            st.line_chart(df[eff_cols])
+        else:
+            st.warning("No valid columns found in file")
+
+    except Exception as e:
+        st.error(f"File Error: {e}")
 
 # ---------------- FINAL ----------------
 st.header("🧠 Diagnosis")
@@ -199,9 +233,9 @@ st.header("🧠 Diagnosis")
 if total_power == 0:
     st.error("Check Inputs")
 elif total_power > 800:
-    st.warning("Overload")
+    st.warning("Compressor overload")
 else:
-    st.success("Normal")
+    st.success("Compressor Normal")
 
 st.divider()
-st.markdown("Digital Twin by Sanket Naik")
+st.markdown("Digital Twin by Sanket Naik 🚀")
