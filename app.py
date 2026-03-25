@@ -1,106 +1,80 @@
 import streamlit as st
 
-st.title("🌀 Multi-Stage Compressor (Stage-wise Efficiency & Power)")
+st.title("🌀 Compressor Stage-wise Actual Performance (From Plant Data)")
 
-# ---------------- INPUT ----------------
-st.header("📥 Input Data")
+# -------- INPUT --------
+st.header("📥 Stage Data Input")
 
-P1 = st.number_input("Inlet Pressure (bar)", value=1.0)
-P_final = st.number_input("Final Pressure (bar)", value=9.0)
-T1 = st.number_input("Inlet Temperature (°C)", value=30.0)
-flow = st.number_input("Flowrate (kg/hr)", value=10000.0)
-
-st.subheader("Design Parameters")
-stages = st.selectbox("Number of Stages", [2, 3])
-
-gamma = st.number_input("Gamma (Cp/Cv)", value=1.4)
 Cp = st.number_input("Cp (kJ/kg-K)", value=1.0)
+Cv = st.number_input("Cv (kJ/kg-K)", value=0.718)
+MW = st.number_input("Molecular Weight", value=28.0)
+flow = st.number_input("Mass Flow (kg/hr)", value=10000.0)
 
-# Individual stage efficiency input
-st.write("### Stage-wise Efficiency")
-eff_stage = []
-for i in range(stages):
-    eff = st.number_input(f"Efficiency Stage {i+1}", value=0.75, key=i)
-    eff_stage.append(eff)
+# Stage Inputs
+def stage_input(name):
+    st.subheader(name)
+    Pin = st.number_input(f"{name} Inlet Pressure (bar)", key=name+"Pin")
+    Pout = st.number_input(f"{name} Outlet Pressure (bar)", key=name+"Pout")
+    Tin = st.number_input(f"{name} Inlet Temp (°C)", key=name+"Tin")
+    Tout = st.number_input(f"{name} Outlet Temp (°C)", key=name+"Tout")
+    return Pin, Pout, Tin, Tout
 
-intercool_temp = st.number_input("Intercooler Outlet Temp (°C)", value=40.0)
+A = stage_input("C201A")
+B = stage_input("C201B")
+C = stage_input("C201C")
 
-# ---------------- CALCULATION ----------------
+# -------- CALC --------
+K = Cp / Cv
+R = 8.314 / MW
+mass_flow = flow / 3600
 
-Cp = Cp * 1000  # J/kg-K
-T1_K = T1 + 273.15
-mass_flow = flow / 3600  # kg/s
+def calc_stage(name, data):
 
-PR_total = P_final / P1
-PR_stage = PR_total ** (1 / stages)
+    Pin, Pout, Tin, Tout = data
 
-st.header("📊 Results")
+    Tin_K = Tin + 273.15
+    Tout_K = Tout + 273.15
 
-total_power_actual = 0
-total_power_ideal = 0
+    PR = Pout / Pin
 
-T_in = T1_K
-P_in = P1
+    # Isentropic temp
+    T2s = Tin_K * (PR)**((K-1)/K)
 
-for i in range(stages):
+    # Efficiency
+    eta = (T2s - Tin_K) / (Tout_K - Tin_K)
 
-    st.subheader(f"Stage {i+1}")
+    # Polytropic index
+    N = ((K-1)/(K*eta)) + 1
+    inv_N = 1/N
 
-    # Pressure
-    P_out = P_in * PR_stage
-
-    # Ideal (isentropic) outlet temp
-    T_out_ideal = T_in * (PR_stage)**((gamma-1)/gamma)
-
-    # Actual outlet temp
-    eta = eff_stage[i]
-    T_out_actual = T_in + (T_out_ideal - T_in) / eta
+    # Head
+    Head = (N/(N-1)) * R * Tin_K * ((PR)**((N-1)/N) - 1)
 
     # Power
-    Power_ideal = mass_flow * Cp * (T_out_ideal - T_in) / 1000
-    Power_actual = mass_flow * Cp * (T_out_actual - T_in) / 1000
+    Power = mass_flow * Head
 
-    total_power_actual += Power_actual
-    total_power_ideal += Power_ideal
+    # Volumetric flow
+    Q = (mass_flow * R * Tin_K) / (Pin * MW)
 
-    # Display
-    st.write(f"Outlet Pressure: {P_out:.2f} bar")
-    st.write(f"Ideal Outlet Temp: {T_out_ideal - 273.15:.2f} °C")
-    st.write(f"Actual Outlet Temp: {T_out_actual - 273.15:.2f} °C")
+    st.subheader(name)
+    st.write(f"Pressure Ratio: {PR:.2f}")
+    st.write(f"Temp Ratio: {(Tout_K/Tin_K):.2f}")
+    st.write(f"Efficiency: {eta:.2f}")
+    st.write(f"K Value: {K:.2f}")
+    st.write(f"N Value: {N:.2f}")
+    st.write(f"1/N: {inv_N:.3f}")
+    st.write(f"Head: {Head:.2f} kJ/kg")
+    st.write(f"Power: {Power:.2f} kW")
+    st.write(f"Volumetric Flow: {Q:.2f} m3/s")
 
-    st.write(f"Ideal Power: {Power_ideal:.2f} kW")
-    st.write(f"Actual Power: {Power_actual:.2f} kW")
+    return Power
 
-    st.write(f"Stage Efficiency: {eta:.2f}")
+# -------- RESULTS --------
+Power_A = calc_stage("Product_C201A", A)
+Power_B = calc_stage("Product_C201B", B)
+Power_C = calc_stage("Product_C201C", C)
 
-    # Intercooling
-    if i < stages - 1:
-        T_in = intercool_temp + 273.15
-    else:
-        T_in = T_out_actual
-
-    P_in = P_out
-
-# ---------------- TOTAL ----------------
+total_power = Power_A + Power_B + Power_C
 
 st.header("⚡ Total Power")
-
-st.write(f"Total Ideal Power: {total_power_ideal:.2f} kW")
-st.write(f"Total Actual Power: {total_power_actual:.2f} kW")
-
-overall_eff = total_power_ideal / total_power_actual
-
-st.write(f"Overall Efficiency: {overall_eff:.2f}")
-
-# ---------------- INTERPRETATION ----------------
-
-st.header("🧠 Interpretation")
-
-if total_power_actual > 500:
-    st.warning("⚠️ High Power Consumption")
-
-if (T_out_actual - 273.15) > 150:
-    st.error("❌ High Discharge Temperature")
-
-else:
-    st.success("✅ Safe Operation")
+st.write(f"Total Compressor Power: {total_power:.2f} kW")
