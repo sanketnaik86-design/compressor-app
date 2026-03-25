@@ -1,79 +1,106 @@
 import streamlit as st
 
-# Title
-st.title("🌀 Multi-Stage Compressor with Intercooling")
+st.title("🌀 Multi-Stage Compressor (Stage-wise Efficiency & Power)")
 
-# ---------------- INPUT SECTION ----------------
+# ---------------- INPUT ----------------
 st.header("📥 Input Data")
 
-# Basic Inputs
-P1 = st.number_input("Inlet Pressure (bar)", value=1.0, min_value=0.1)
-P_final = st.number_input("Final Pressure (bar)", value=9.0, min_value=0.1)
+P1 = st.number_input("Inlet Pressure (bar)", value=1.0)
+P_final = st.number_input("Final Pressure (bar)", value=9.0)
 T1 = st.number_input("Inlet Temperature (°C)", value=30.0)
-flow = st.number_input("Flowrate (kg/hr)", value=10000.0, min_value=0.0)
+flow = st.number_input("Flowrate (kg/hr)", value=10000.0)
 
 st.subheader("Design Parameters")
 stages = st.selectbox("Number of Stages", [2, 3])
-eff = st.number_input("Efficiency (0-1)", value=0.75, min_value=0.1, max_value=1.0)
-gamma = st.number_input("Gamma (Cp/Cv)", value=1.4, min_value=1.0)
-Cp = st.number_input("Cp (kJ/kg-K)", value=1.0, min_value=0.1)
+
+gamma = st.number_input("Gamma (Cp/Cv)", value=1.4)
+Cp = st.number_input("Cp (kJ/kg-K)", value=1.0)
+
+# Individual stage efficiency input
+st.write("### Stage-wise Efficiency")
+eff_stage = []
+for i in range(stages):
+    eff = st.number_input(f"Efficiency Stage {i+1}", value=0.75, key=i)
+    eff_stage.append(eff)
+
 intercool_temp = st.number_input("Intercooler Outlet Temp (°C)", value=40.0)
 
-# ---------------- CALCULATIONS ----------------
+# ---------------- CALCULATION ----------------
 
-# Unit conversions
-Cp = Cp * 1000            # kJ/kg-K → J/kg-K
-T1_K = T1 + 273.15       # °C → K
+Cp = Cp * 1000  # J/kg-K
+T1_K = T1 + 273.15
+mass_flow = flow / 3600  # kg/s
 
-# Pressure ratio
 PR_total = P_final / P1
 PR_stage = PR_total ** (1 / stages)
 
 st.header("📊 Results")
 
-total_power = 0
-T_in_stage = T1_K
-P_in_stage = P1
+total_power_actual = 0
+total_power_ideal = 0
 
-for i in range(1, stages + 1):
+T_in = T1_K
+P_in = P1
 
-    # Stage pressure
-    P_out_stage = P_in_stage * PR_stage
+for i in range(stages):
 
-    # Temperature after compression (isentropic)
-    T_out_stage = T_in_stage * (PR_stage) ** ((gamma - 1) / gamma)
+    st.subheader(f"Stage {i+1}")
 
-    # Power calculation (kW)
-    mass_flow = flow / 3600  # kg/hr → kg/s
-    Power_stage = (mass_flow * Cp * (T_out_stage - T_in_stage)) / (eff * 1000)
+    # Pressure
+    P_out = P_in * PR_stage
 
-    total_power += Power_stage
+    # Ideal (isentropic) outlet temp
+    T_out_ideal = T_in * (PR_stage)**((gamma-1)/gamma)
 
-    # Display results
-    st.subheader(f"Stage {i}")
-    st.write(f"Outlet Pressure: {P_out_stage:.2f} bar")
-    st.write(f"Outlet Temperature: {T_out_stage - 273.15:.2f} °C")
-    st.write(f"Power Required: {Power_stage:.2f} kW")
+    # Actual outlet temp
+    eta = eff_stage[i]
+    T_out_actual = T_in + (T_out_ideal - T_in) / eta
 
-    # Intercooling logic
-    if i < stages:
-        T_in_stage = intercool_temp + 273.15
+    # Power
+    Power_ideal = mass_flow * Cp * (T_out_ideal - T_in) / 1000
+    Power_actual = mass_flow * Cp * (T_out_actual - T_in) / 1000
+
+    total_power_actual += Power_actual
+    total_power_ideal += Power_ideal
+
+    # Display
+    st.write(f"Outlet Pressure: {P_out:.2f} bar")
+    st.write(f"Ideal Outlet Temp: {T_out_ideal - 273.15:.2f} °C")
+    st.write(f"Actual Outlet Temp: {T_out_actual - 273.15:.2f} °C")
+
+    st.write(f"Ideal Power: {Power_ideal:.2f} kW")
+    st.write(f"Actual Power: {Power_actual:.2f} kW")
+
+    st.write(f"Stage Efficiency: {eta:.2f}")
+
+    # Intercooling
+    if i < stages - 1:
+        T_in = intercool_temp + 273.15
     else:
-        T_in_stage = T_out_stage
+        T_in = T_out_actual
 
-    P_in_stage = P_out_stage
+    P_in = P_out
 
-# ---------------- TOTAL POWER ----------------
+# ---------------- TOTAL ----------------
+
 st.header("⚡ Total Power")
-st.write(f"{total_power:.2f} kW")
+
+st.write(f"Total Ideal Power: {total_power_ideal:.2f} kW")
+st.write(f"Total Actual Power: {total_power_actual:.2f} kW")
+
+overall_eff = total_power_ideal / total_power_actual
+
+st.write(f"Overall Efficiency: {overall_eff:.2f}")
 
 # ---------------- INTERPRETATION ----------------
+
 st.header("🧠 Interpretation")
 
-if total_power > 500:
-    st.warning("⚠️ High Power Consumption - Check staging or intercooling efficiency")
+if total_power_actual > 500:
+    st.warning("⚠️ High Power Consumption")
 
-if (T_out_stage - 273.15) > 150:
-    st.error("❌ High Discharge Temperature - Risk of compressor damage")
+if (T_out_actual - 273.15) > 150:
+    st.error("❌ High Discharge Temperature")
+
 else:
-    st.success("✅ Operating in safe temperature range")
+    st.success("✅ Safe Operation")
