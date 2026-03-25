@@ -1,4 +1,4 @@
-import streamlit as st
+    import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,17 +27,17 @@ def stage_input(name):
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        Pin = st.number_input(f"{name} Inlet Pressure (bar)", key=name+"Pin")
+        Pin = st.number_input(f"{name} Inlet Pressure (bar)", key=name+"Pin", min_value=0.0)
         Tin = st.number_input(f"{name} Inlet Temp (°C)", key=name+"Tin")
 
     with c2:
-        Pout = st.number_input(f"{name} Outlet Pressure (bar)", key=name+"Pout")
+        Pout = st.number_input(f"{name} Outlet Pressure (bar)", key=name+"Pout", min_value=0.0)
         Tout = st.number_input(f"{name} Outlet Temp (°C)", key=name+"Tout")
 
     with c3:
-        MW = st.number_input(f"{name} MW", key=name+"MW", value=28.0)
-        Cp = st.number_input(f"{name} Cp", key=name+"Cp", value=1.005)
-        Cv = st.number_input(f"{name} Cv", key=name+"Cv", value=0.718)
+        MW = st.number_input(f"{name} MW", key=name+"MW", value=28.0, min_value=1.0)
+        Cp = st.number_input(f"{name} Cp", key=name+"Cp", value=1.005, min_value=0.1)
+        Cv = st.number_input(f"{name} Cv", key=name+"Cv", value=0.718, min_value=0.1)
 
     return Pin, Pout, Tin, Tout, MW, Cp, Cv
 
@@ -85,6 +85,9 @@ def calc_stage(data, stage_no):
     # Polytropic index
     N = ((K - 1)/(K * eta)) + 1
 
+    if abs(N - 1) < 0.001:
+        return None  # avoid division error
+
     # Head
     Head = (N/(N-1)) * R * Tin_K * ((PR)**((N-1)/N) - 1)
 
@@ -128,7 +131,7 @@ st.header("⚙️ Stage-wise Results")
 results = []
 total_power = 0
 
-cols = st.columns(stages)
+cols = st.columns(int(stages))  # safer
 
 for i, data in enumerate(stage_data):
     res = calc_stage(data, i+1)
@@ -158,27 +161,28 @@ st.header("⚡ Total Performance")
 
 st.success(f"Total Power: {total_power:.2f} kW")
 
-if results:
+if len(results) > 0:
     avg_eff = np.mean([r["Efficiency"] for r in results])
     st.metric("Overall Efficiency", f"{avg_eff:.1f} %")
 
 # ---------------- INTERCOOLER ----------------
 st.header("❄️ Intercooler Performance")
 
-for i in range(len(results)-1):
-    T_out = results[i]["Tout"]
-    T_next_in = stage_data[i+1][2] + 273.15
+if len(results) > 1:
+    for i in range(len(results)-1):
+        T_out = results[i]["Tout"]
+        T_next_in = stage_data[i+1][2] + 273.15
 
-    delta = T_out - T_next_in
+        delta = T_out - T_next_in
 
-    st.write(f"Stage {i+1} → Stage {i+2}")
+        st.write(f"Stage {i+1} → Stage {i+2}")
 
-    if delta < 10:
-        st.warning("Poor cooling → intercooler issue")
-    elif delta > 50:
-        st.info("Excellent cooling")
-    else:
-        st.success("Normal cooling")
+        if delta < 10:
+            st.warning("Poor cooling → intercooler issue")
+        elif delta > 50:
+            st.info("Excellent cooling")
+        else:
+            st.success("Normal cooling")
 
 # ---------------- SURGE ----------------
 st.header("⚠️ Surge Risk Indicator")
@@ -229,10 +233,8 @@ st.header("🧠 Overall Diagnosis")
 
 if total_power == 0:
     st.error("Check Inputs")
-
 elif total_power > 800:
     st.warning("⚠️ Compressor overload")
-
 else:
     st.success("✅ Compressor operating normally")
 
